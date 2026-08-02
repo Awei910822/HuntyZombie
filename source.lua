@@ -33,36 +33,24 @@ local isAutoFarmEnabled = true
 local NO_ZOMBIE_Y = 4         
 local RELATIVE_Y_OFFSET = -5  
 local AUTO_ATTACK_DELAY = 0.1 
-local FARM_RESPAWN_DELAY = 5    -- [優化] 自動打怪專用的短重生延遲（1秒內立即恢復）
+local FARM_RESPAWN_DELAY = 4    -- 重生後等待 4 秒再執行自動打怪
 local CLICK_INTERVAL = 0.25   
-
--- 整合進自動打怪的定時傳送重生點參數
-local TELEPORT_INTERVAL = 5     
-local lastTeleportTime = 0
 
 local targetZombie = nil
 local zombieRoot = nil
 local isRespawning = false
 local lastClickTime = 0
 
+-- 追蹤與鎖定變數
+local trackingStartTime = 0
+local targetLockUntil = 0
+local lockedPosition = nil
+
 local heartbeatConnection = nil
 local inputConnection = nil
 local characterAddedConnection = nil
 local autoAttackThread = nil
 local screenGui = nil
-
--- 更強效的重生點搜尋
-local function getSpawnPart()
-    for _, obj in pairs(Workspace:GetDescendants()) do
-        if obj.Name == "Spawn" and obj:IsA("BasePart") then
-            local parentName = obj.Parent and obj.Parent.Name or ""
-            if parentName == "Entity Spawns" or obj:IsDescendantOf(Workspace) then
-                return obj
-            end
-        end
-    end
-    return nil
-end
 
 -- 銷毀函式
 function ScriptController:Destroy()
@@ -270,18 +258,36 @@ heartbeatConnection = RunService.Heartbeat:Connect(function()
 
     local currentTime = tick()
 
-    if currentTime - lastTeleportTime >= TELEPORT_INTERVAL then
-        local spawnPart = getSpawnPart()
-        if spawnPart then
-            local pos = spawnPart.Position
-            playerRoot.CFrame = CFrame.new(pos.X, pos.Y + 4, pos.Z)
-            lastTeleportTime = currentTime
-            return 
+    -- 如果處於 0.5 秒的鎖定期間內，強制維持鎖定座標
+    if currentTime < targetLockUntil and lockedPosition then
+        playerRoot.CFrame = CFrame.new(lockedPosition)
+        return
+    end
+
+    local oldTarget = targetZombie
+    if not isZombieAlive(targetZombie, zombieRoot) then
+        targetZombie, zombieRoot = findNearestZombie()
+        if targetZombie ~= oldTarget then
+            trackingStartTime = currentTime -- 換新目標時重設追蹤計時
         end
     end
 
-    if not isZombieAlive(targetZombie, zombieRoot) then
-        targetZombie, zombieRoot = findNearestZombie()
+    -- 檢查是否正在追蹤特定殭屍滿 5 秒
+    if targetZombie and targetZombie.Parent then
+        if currentTime - trackingStartTime >= 5 then
+            local head = targetZombie:FindFirstChild("Head")
+            -- 若 Head 存在且 CanCollide 為 false (即未勾選，代表過了 5 秒依然還活著)
+            if head and head:IsA("BasePart") and head.CanCollide == false then
+                lockedPosition = Vector3.new(playerRoot.Position.X, 4, playerRoot.Position.Z)
+                targetLockUntil = currentTime + 0.5 -- 鎖定 0.5 秒
+                playerRoot.CFrame = CFrame.new(lockedPosition)
+                targetZombie = nil
+                zombieRoot = nil
+                return
+            end
+        end
+    else
+        trackingStartTime = currentTime
     end
 
     if zombieRoot then
@@ -294,10 +300,12 @@ end)
 
 characterAddedConnection = player.CharacterAdded:Connect(function(newCharacter)
     isRespawning = true
-    task.wait(FARM_RESPAWN_DELAY) -- 僅等待 1 秒讓新角色生成，立刻恢復打怪
+    targetLockUntil = 0
+    task.wait(FARM_RESPAWN_DELAY) 
     character = newCharacter
     playerRoot = newCharacter:WaitForChild("HumanoidRootPart")
     isRespawning = false
+    trackingStartTime = tick()
 end)
 
 local function toggleAutoFarm()
