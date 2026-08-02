@@ -33,7 +33,7 @@ local isAutoFarmEnabled = true
 local NO_ZOMBIE_Y = 4         
 local RELATIVE_Y_OFFSET = -5  
 local AUTO_ATTACK_DELAY = 0.1 
-local RESPAWN_DELAY = 8       
+local FARM_RESPAWN_DELAY = 5    -- [優化] 自動打怪專用的短重生延遲（1秒內立即恢復）
 local CLICK_INTERVAL = 0.25   
 
 -- 整合進自動打怪的定時傳送重生點參數
@@ -168,7 +168,7 @@ local replayBtn, updateReplayUI = createToggleUI("ReplayToggle", "自動 Replay"
 local farmBtn, updateFarmUI = createToggleUI("FarmToggle", "自動打怪 (Key: H)", 100, isAutoFarmEnabled)
 
 -- =========================================================
--- 功能 1：自動 Replay（優化升級版：主動全域搜尋 Replay 按鈕）
+-- 功能 1：自動 Replay
 -- =========================================================
 local function triggerGameReplay()
     for _, desc in pairs(playerGui:GetDescendants()) do
@@ -191,13 +191,12 @@ local function triggerGameReplay()
     return false
 end
 
--- 使用迴圈定時檢查結算畫面是否出現，避免因為 UI 結構改變而失效
 task.spawn(function()
     while true do
         if isAutoReplayEnabled then
             triggerGameReplay()
         end
-        task.wait(1) -- 每秒檢查一次
+        task.wait(1)
     end
 end)
 
@@ -295,7 +294,7 @@ end)
 
 characterAddedConnection = player.CharacterAdded:Connect(function(newCharacter)
     isRespawning = true
-    task.wait(RESPAWN_DELAY)
+    task.wait(FARM_RESPAWN_DELAY) -- 僅等待 1 秒讓新角色生成，立刻恢復打怪
     character = newCharacter
     playerRoot = newCharacter:WaitForChild("HumanoidRootPart")
     isRespawning = false
