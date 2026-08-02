@@ -150,8 +150,8 @@ local function createToggleUI(name, text, yOffset, defaultState)
     return checkBox, updateVisual
 end
 
-local replayBtn, updateReplayUI = createToggleUI("ReplayToggle", "自動 Replay (自動開局)", 50, isAutoReplayEnabled)
-local farmBtn, updateFarmUI = createToggleUI("FarmToggle", "自動打怪 (熱鍵: H)", 100, isAutoFarmEnabled)
+local replayBtn, updateReplayUI = createToggleUI("ReplayToggle", "自動 Replay", 50, isAutoReplayEnabled)
+local farmBtn, updateFarmUI = createToggleUI("FarmToggle", "自動打怪 (Key: H)", 100, isAutoFarmEnabled)
 
 -- =========================================================
 -- 功能 1：自動 Replay 邏輯
@@ -351,4 +351,4 @@ inputConnection = UserInputService.InputBegan:Connect(function(input, gameProces
     end
 end)
 
-print("【Wei Hub】載入成功！防重複執行機制已生效。")
+print("【Wei Hub】載入成功！")
