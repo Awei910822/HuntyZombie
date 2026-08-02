@@ -3,6 +3,7 @@ local CoreGui = game:GetService("CoreGui")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local Workspace = game:GetService("Workspace")
 
 -- =========================================================
 -- 防重複執行與銷毀機制
@@ -20,22 +21,24 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local character = player.Character or player.CharacterAdded:Wait()
 local playerRoot = character:WaitForChild("HumanoidRootPart")
-local zombiesFolder = workspace:WaitForChild("Entities"):WaitForChild("Zombie")
+local zombiesFolder = Workspace:WaitForChild("Entities"):WaitForChild("Zombie")
 
 -- =========================================================
 -- 參數設定與狀態變數
 -- =========================================================
--- [ 自動 Replay 變數 ]
 local isAutoReplayEnabled = true
 local endScreenConnection = nil
 
--- [ 自動打怪變數 ]
 local isAutoFarmEnabled = true
-local LOCK_Y = -5             -- 沒殭屍時的高度
-local RELATIVE_Y_OFFSET = -5  -- 有殭屍時的相對高度差
-local AUTO_ATTACK_DELAY = 0.1 -- 技能檢查循環間隔（秒）
-local RESPAWN_DELAY = 8       -- 重生後等待 8 秒
-local CLICK_INTERVAL = 0.25   -- 普攻點擊間隔（秒）
+local LOCK_Y = -5             
+local RELATIVE_Y_OFFSET = -5  
+local AUTO_ATTACK_DELAY = 0.1 
+local RESPAWN_DELAY = 8       
+local CLICK_INTERVAL = 0.25   
+
+local isTeleportSpawnEnabled = true
+local TELEPORT_INTERVAL = 5     
+local teleportThread = nil
 
 local targetZombie = nil
 local zombieRoot = nil
@@ -48,16 +51,31 @@ local characterAddedConnection = nil
 local autoAttackThread = nil
 local screenGui = nil
 
--- 銷毀函式：當重新執行或手動關閉時觸發
+-- 更強效的重生點搜尋
+local function getSpawnPart()
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj.Name == "Spawn" and obj:IsA("BasePart") then
+            local parentName = obj.Parent and obj.Parent.Name or ""
+            if parentName == "Entity Spawns" or obj:IsDescendantOf(Workspace) then
+                return obj
+            end
+        end
+    end
+    return nil
+end
+
+-- 銷毀函式
 function ScriptController:Destroy()
     isAutoFarmEnabled = false
     isAutoReplayEnabled = false
+    isTeleportSpawnEnabled = false
     
     if endScreenConnection then endScreenConnection:Disconnect() end
     if heartbeatConnection then heartbeatConnection:Disconnect() end
     if inputConnection then inputConnection:Disconnect() end
     if characterAddedConnection then characterAddedConnection:Disconnect() end
     if autoAttackThread then task.cancel(autoAttackThread) end
+    if teleportThread then task.cancel(teleportThread) end
     if screenGui and screenGui.Parent then screenGui:Destroy() end
 
     getgenv()[SCRIPT_NAME] = nil
@@ -65,7 +83,7 @@ function ScriptController:Destroy()
 end
 
 -- =========================================================
--- 建立 UI 介面 (Wei Hub)
+-- 建立 UI 介面
 -- =========================================================
 screenGui = Instance.new("ScreenGui")
 screenGui.Name = SCRIPT_NAME .. "Gui"
@@ -74,8 +92,8 @@ screenGui.Parent = CoreGui
 
 local mainFrame = Instance.new("Frame")
 mainFrame.Name = "MainFrame"
-mainFrame.Size = UDim2.new(0, 300, 0, 160)
-mainFrame.Position = UDim2.new(0.5, -150, 0.4, -80)
+mainFrame.Size = UDim2.new(0, 300, 0, 210)
+mainFrame.Position = UDim2.new(0.5, -150, 0.4, -105)
 mainFrame.BackgroundColor3 = Color3.fromRGB(25, 27, 32)
 mainFrame.BorderSizePixel = 0
 mainFrame.Active = true
@@ -86,7 +104,6 @@ mainCorner.CornerRadius = UDim.new(0, 10)
 mainCorner.Parent = mainFrame
 
 local titleLabel = Instance.new("TextLabel")
-titleLabel.Name = "TitleLabel"
 titleLabel.Size = UDim2.new(1, -20, 0, 35)
 titleLabel.Position = UDim2.new(0, 15, 0, 5)
 titleLabel.BackgroundTransparency = 1
@@ -106,7 +123,6 @@ divider.Parent = mainFrame
 
 local function createToggleUI(name, text, yOffset, defaultState)
     local toggleFrame = Instance.new("Frame")
-    toggleFrame.Name = name
     toggleFrame.Size = UDim2.new(1, -30, 0, 45)
     toggleFrame.Position = UDim2.new(0, 15, 0, yOffset)
     toggleFrame.BackgroundTransparency = 1
@@ -152,9 +168,10 @@ end
 
 local replayBtn, updateReplayUI = createToggleUI("ReplayToggle", "自動 Replay", 50, isAutoReplayEnabled)
 local farmBtn, updateFarmUI = createToggleUI("FarmToggle", "自動打怪 (Key: H)", 100, isAutoFarmEnabled)
+local spawnBtn, updateSpawnUI = createToggleUI("SpawnToggle", "定時 5秒傳送重生點", 150, isTeleportSpawnEnabled)
 
 -- =========================================================
--- 功能 1：自動 Replay 邏輯
+-- 功能 1：自動 Replay
 -- =========================================================
 local function triggerGameReplay()
     local mainScreen = playerGui:FindFirstChild("MainScreen_Sibling")
@@ -162,25 +179,10 @@ local function triggerGameReplay()
     local list = endScreen and endScreen:FindFirstChild("List")
     local buttons = list and list:FindFirstChild("buttons")
     
-    local replayBtnObj = nil
-    if buttons then
-        local foundChild = buttons:FindFirstChild("Replay")
-        if foundChild then
-            replayBtnObj = foundChild
-        else
-            for _, child in pairs(buttons:GetChildren()) do
-                if child.Name:lower() == "replay" then
-                    replayBtnObj = child
-                    break
-                end
-            end
-        end
-    end
-
+    local replayBtnObj = buttons and buttons:FindFirstChild("Replay")
     if replayBtnObj then
         if firesignal then
             firesignal(replayBtnObj.MouseButton1Click)
-            firesignal(replayBtnObj.Activated)
         else
             local pos = replayBtnObj.AbsolutePosition
             local size = replayBtnObj.AbsoluteSize
@@ -194,7 +196,6 @@ end
 local function checkEndScreen()
     local mainScreen = playerGui:FindFirstChild("MainScreen_Sibling")
     local endScreen = mainScreen and mainScreen:FindFirstChild("EndScreen")
-    
     if endScreen and isAutoReplayEnabled and endScreen.Visible then
         task.wait(0.5)
         triggerGameReplay()
@@ -204,7 +205,6 @@ end
 local function setupReplayListener()
     local mainScreen = playerGui:WaitForChild("MainScreen_Sibling", 10)
     local endScreen = mainScreen and mainScreen:WaitForChild("EndScreen", 10)
-
     if endScreen then
         if endScreenConnection then endScreenConnection:Disconnect() end
         endScreenConnection = endScreen:GetPropertyChangedSignal("Visible"):Connect(checkEndScreen)
@@ -221,7 +221,7 @@ end)
 if isAutoReplayEnabled then setupReplayListener() end
 
 -- =========================================================
--- 功能 2：自動打怪邏輯
+-- 功能 2：自動打怪
 -- =========================================================
 local function pressKey(keyCode)
     VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
@@ -236,8 +236,7 @@ local function clickMouse()
 end
 
 local function isZombieAlive(zombie, root)
-    if not zombie or not zombie.Parent then return false end
-    if not root or not root.Parent then return false end
+    if not zombie or not zombie.Parent or not root or not root.Parent then return false end
     local head = zombie:FindFirstChild("Head")
     return not (head and head.CanCollide == true)
 end
@@ -307,16 +306,36 @@ end)
 local function toggleAutoFarm()
     isAutoFarmEnabled = not isAutoFarmEnabled
     updateFarmUI(isAutoFarmEnabled)
-    
-    if not isAutoFarmEnabled and playerRoot and playerRoot.Parent then
-        playerRoot.CFrame = CFrame.new(playerRoot.Position.X, 3, playerRoot.Position.Z)
-    end
 end
 
 farmBtn.MouseButton1Click:Connect(toggleAutoFarm)
 
 -- =========================================================
--- 互動邏輯：拖曳與熱鍵
+-- 功能 3：定時 5秒傳送到重生點（Y 軸固定為 +3）
+-- =========================================================
+teleportThread = task.spawn(function()
+    while true do
+        task.wait(TELEPORT_INTERVAL)
+        if isTeleportSpawnEnabled and not isRespawning and playerRoot and playerRoot.Parent then
+            local spawnPart = getSpawnPart()
+            if spawnPart then
+                local pos = spawnPart.Position
+                -- 將 Y 軸強制設定為原高度 + 3
+                playerRoot.CFrame = CFrame.new(pos.X, pos.Y + 3, pos.Z)
+            end
+        end
+    end
+end)
+
+local function toggleTeleportSpawn()
+    isTeleportSpawnEnabled = not isTeleportSpawnEnabled
+    updateSpawnUI(isTeleportSpawnEnabled)
+end
+
+spawnBtn.MouseButton1Click:Connect(toggleTeleportSpawn)
+
+-- =========================================================
+-- 互動邏輯
 -- =========================================================
 local dragging, dragInput, dragStart, startPos
 
@@ -325,18 +344,11 @@ mainFrame.InputBegan:Connect(function(input)
         dragging = true
         dragStart = input.Position
         startPos = mainFrame.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then dragging = false end
-        end)
     end
 end)
 
-mainFrame.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement then dragInput = input end
-end)
-
 UserInputService.InputChanged:Connect(function(input)
-    if input == dragInput and dragging then
+    if input.UserInputType == Enum.UserInputType.MouseMovement and dragging then
         local delta = input.Position - dragStart
         mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
     end
